@@ -1,0 +1,3 @@
+/dmain.o: dmain.c db.h controls.h
+/db.o: db.c db.h
+/controls.o: controls.c controls.h
