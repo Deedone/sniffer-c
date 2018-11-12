@@ -43,14 +43,12 @@ db_entry* get_by_ip(unsigned long addr){
 		if(probe->addr == addr){
 			return probe;
 		}
-		if(i == 0) break;//Structured like this to prevent R overflowing to superhigh values
-		//Because of unsignedness of R and L expr L <= R dont capture sutiation like L = 0 R = -1
-
 		if(probe->addr < addr){
 			L = i + 1;
 		}
 		else if(probe->addr > addr){
 			R = i - 1;
+			if(R == -1) break;
 		}
 	}
 	return 0;

@@ -38,6 +38,7 @@ int main(int argc, char** argv){
 		else{
 			show_all_stat();
 		}
+		return 0;
 	}
 	if(argc == 4 && strcmp("select",argv[1]) == 0 && strcmp("iface",argv[2]) == 0){
 		select_iface(argv[3]);
