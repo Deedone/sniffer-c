@@ -11,6 +11,7 @@ void show_stat(char* iface);
 void show_all_stat();
 void close();
 void select_iface(char* iface);
+int connect_or_run();
 
 int main(int argc, char** argv){
 
@@ -49,6 +50,16 @@ int main(int argc, char** argv){
 	return 0;
 }
 
+
+int connect_or_run(){
+	int sock;
+	if(make_ipc_socket(&sock,0) == -1){
+		printf("Running daemon\n");
+		system("sudo ./daemon");
+	}
+
+	return sock;
+}
 
 
 

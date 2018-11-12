@@ -1,15 +1,20 @@
-#include<stdio.h>	//For standard things
-#include<stdlib.h>	//malloc
-#include<unistd.h>
-#include<string.h>	//memset
-#include<netinet/ip.h>	//Provides declarations for ip header
-#include<sys/socket.h>
-#include<arpa/inet.h>
-#include<time.h>
-#include<sys/select.h>
-#include<signal.h>
+#include <stdio.h>	//For standard things
+#include <stdlib.h>	//malloc
+#include <unistd.h>
+#include <string.h>	//memset
+#include <netinet/ip.h>	//Provides declarations for ip header
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <time.h>
+#include <sys/select.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <net/ethernet.h>
+#include <netpacket/packet.h>
+#include <net/ethernet.h>
 
 #include "db.h"
 #include "controls.h"
@@ -25,19 +30,19 @@ void daemonize();
 int main()
 {
 
-	daemonize();
+	//daemonize();
 	unsigned char *buffer = (unsigned char *)malloc(65536); //Its Big!
 	int socket, control;
 	time_t lastsave = 0;//Time of last DB dump
 	fd_set readfds; //This is for select()
-	open_db("eth0");
+	open_db("wlp2s0");
 
-	if(make_socket(&socket, "eth0") == -1){
-			perror("Socket error: ");
+	if(make_socket(&socket, "wlp2s0") == -1){
+			perror("Socket error");
 			return 1;
 	}
 	if(make_ipc_socket(&control,1) == -1){
-			perror("IPC error: ");
+			perror("IPC error");
 			return 1;
 	}
 	listen(control,1);
@@ -49,20 +54,26 @@ int main()
 		FD_SET(control,&readfds);
 		int result = select(control+1,&readfds,NULL,NULL,NULL);//Wait for data to appear in sockets
 		if(result == -1){
-			perror("Error: ");
+			perror("Error");
 			break;
 		}
 
 		if(FD_ISSET(socket,&readfds)){
 			//printf("Got inet dada\n");
-			int data_size = recv(socket , buffer , 65536 , 0);
+			struct sockaddr_ll addr;
+			socklen_t addr_len = sizeof(addr);
+			int data_size = recvfrom(socket , buffer , 65536 , 0, (struct sockaddr*)&addr, &addr_len);
+			
+
 			if(data_size <0 ){
 				perror("Error");
 				//printf("Recvfrom error , failed to get packets\n");
 				return 1;
 			}
 			//Now process the packet
-			process_packet(buffer , data_size);
+			if(addr.sll_pkttype != PACKET_OUTGOING){
+				process_packet(buffer , data_size);
+			}
 			if(time(0) - lastsave > 2){
 				dump_db();
 				//printf("Db dumped\n");
@@ -94,11 +105,13 @@ int main()
 
 void process_packet(unsigned char* buffer, int size)
 {
-	struct sockaddr_in source;
+	struct sockaddr_in source, dest;
 	//Get the IP Header part of this packet
-	struct iphdr *iph = (struct iphdr*)buffer;
+	struct iphdr *iph = (struct iphdr*)(buffer+ sizeof(struct ethhdr));
 	source.sin_addr.s_addr = iph->saddr;
-	////printf("%s ",inet_ntoa(source.sin_addr));
+	dest.sin_addr.s_addr = iph->daddr;
+	printf("%s ",inet_ntoa(source.sin_addr));
+	printf("%s\n",inet_ntoa(dest.sin_addr));
 	add_db(iph->saddr);
 
 }
@@ -113,10 +126,27 @@ int process_command(unsigned char* cmd, int socket){
 }
 
 int make_socket(int* sockfd, char* iface){
-	*sockfd = socket(AF_INET , SOCK_RAW , IPPROTO_TCP);
+	*sockfd = socket(AF_PACKET , SOCK_RAW , htons(ETH_P_ALL));
 	if(*sockfd < 0)
 		return -1;
-	setsockopt(*sockfd , SOL_SOCKET , SO_BINDTODEVICE , iface, strlen(iface)+ 1 );
+
+	//Get iface index
+	struct ifreq ifr;
+	strcpy(ifr.ifr_name,iface);
+	if(ioctl(*sockfd,SIOCGIFINDEX,&ifr) != 0){
+		return -1;
+	}
+	struct sockaddr_ll cfg;
+	memset(&cfg,0,sizeof cfg);
+	cfg.sll_family = AF_PACKET;
+	cfg.sll_protocol = htons(ETH_P_ALL);
+	cfg.sll_ifindex = ifr.ifr_ifindex;
+
+	//bind to interface
+	if(bind(*sockfd,(struct sockaddr*)&cfg,sizeof cfg) == -1){
+		return -1;
+	}
+
 
 	return 1;
 }
