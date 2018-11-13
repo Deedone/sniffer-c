@@ -25,6 +25,10 @@ void add_db(unsigned long addr);
 // Searches for in O(log(n)), if not found returns 0
 db_entry* get_by_ip(unsigned long addr);
 
+int get_db_size();
+db_entry* get_db();
+char* get_db_name();
+void close_db();
 
-int check_db();
+
 

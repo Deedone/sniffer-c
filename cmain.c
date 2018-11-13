@@ -3,29 +3,32 @@
 #include <string.h>
 #include <dirent.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 
 void help();
 void show_count(char* ip);
 void show_stat(char* iface);
 void show_all_stat();
-void close();
 void select_iface(char* iface);
 int connect_or_run();
+void print_results(int socket);
+void start();
+void stop();
 
 int main(int argc, char** argv){
 
+	int control = -1;
 	if(argc == 1){
 		help();
 		return 0;
 	}
 	if(strcmp("start",argv[1]) == 0){
-		printf("Starting daemon on eth0\n");
-		system("sudo ./daemon");
+		start();
 		return 0;
 	}
 	if(strcmp("stop",argv[1]) == 0){
-		close();
+		stop();
 		return 0;
 	}
 	if(strcmp("show",argv[1]) == 0 && strcmp("count",argv[3]) == 0){
@@ -50,18 +53,56 @@ int main(int argc, char** argv){
 	return 0;
 }
 
+void start(){
+		printf("Starting daemon on eth0\n");
+		int control = connect_or_run();
+		if(control == -1) return;
+
+		command_t cmd;
+		cmd.cmd = START;
+		send(control,&cmd,sizeof cmd,0);
+
+		close(control);
+
+}
+
+void stop(){
+		int control = connect_or_run();
+		if(control == -1) return;
+
+		command_t cmd;
+		cmd.cmd = STOP;
+		send(control,&cmd,sizeof cmd,0);
+
+		close(control);
+}
+
+void show_all_stat(){
+			int control = connect_or_run();
+			if(control == -1) return;
+
+			command_t cmd;
+			cmd.cmd = ALL_STATS;
+			if(send(control,&cmd,sizeof cmd,0) > 0)
+				print_results(control);
+			else
+				perror("Connection error");
+			close(control);
+}
 
 int connect_or_run(){
 	int sock;
 	if(make_ipc_socket(&sock,0) == -1){
 		printf("Running daemon\n");
 		system("sudo ./daemon");
+		if(sock == -1 && make_ipc_socket(&sock,0) == -1){
+			perror("Error starting daemon");
+			return -1;
+		}
 	}
 
 	return sock;
 }
-
-
 
 void help(){
 	printf("Simple sniffer daemon \n"
@@ -77,100 +118,68 @@ void help(){
 
 }
 
+void print_results(int socket){
+	char buf[255];
+	do{
+		int len = recv(socket, buf, 255,0);
+		if(len == 0){
+			perror("Err");
+		}
+		if(strncmp("SENDEND",buf,255) != 0){
+				printf("%s",buf);
+		}else{
+			break;
+		}
+
+	}while(1);
+}
+	
+
 void show_count(char* ip){
+
 	struct in_addr addr;
 	unsigned long total= 0;
 	if(inet_aton(ip,&addr) == 0){
 		printf("Error parsing ip address\n");
 		return;
 	}
-	DIR* d;
-	struct dirent *ent;
-	d = opendir(".");
-	if (d){
-		//Looping through all files in cwd
-		while ((ent = readdir(d)) != NULL)
-		{
-			if(strstr(ent->d_name,".db") != NULL){
-				//Removing .db from filenames
-				char* iface = (char*)malloc(strlen(ent->d_name)-2);
-				memcpy(iface,ent->d_name,strlen(ent->d_name)-3);
-				iface[strlen(ent->d_name)-2] = '\0';
-				open_db(iface);
 
-				db_entry* data = get_by_ip(addr.s_addr);
-				if(data == 0){
-					printf("%s - No data\n",iface);
-				}
-				else{
-					printf("%s - %lu\n",iface, data->count);
-					total+=data->count;
-				}
-				free(iface);
-			}
-
-
-		}
-		printf("Total - %lu\n",total);
-		closedir(d);
-	}
-
+	int control = connect_or_run();
+	if(control == -1) return;
+	command_t cmd;
+	cmd.cmd = SHOW_COUNT;
+	cmd.intarg = addr.s_addr;
+	if(send(control,&cmd,sizeof cmd,0) > 0)
+		print_results(control);
+	else
+		perror("Connection error");
 
 }
 
 void show_stat(char* iface){
-	open_db(iface);
-	print_db();
-}
+	int control = connect_or_run();
+	if(control == -1) return;
 
-void show_all_stat(){
-	DIR* d;
-	struct dirent *ent;
-	d = opendir(".");
-	if (d){
-		//Looping through all files in cwd
-		while ((ent = readdir(d)) != NULL)
-		{
-			if(strstr(ent->d_name,".db") != NULL){
-				//Removing .db from filenames
-				char* iface = (char*)malloc(strlen(ent->d_name)-2);
-				memcpy(iface,ent->d_name,strlen(ent->d_name)-3);
-				iface[strlen(ent->d_name)-2] = '\0';
-				printf("%s: \n",iface);
-				open_db(iface);
-				print_db();
-				free(iface);
-			}
-		}
-	}
-}
+	command_t cmd;
+	cmd.cmd = STATS;
+	strcpy(cmd.chararg,iface);
 
-void close(){
-		printf("Stopping daemon\n");
-		int sock;
-		if(make_ipc_socket(&sock,0) == -1){
-			perror("Error:");
-		}
-		if(send(sock,"stopcmd",strlen("stopcmd")+1, 0) == -1){
-			perror("Error:");
-		}
-		
-		shutdown(sock,2);
+	if(send(control,&cmd,sizeof cmd,0) > 0)
+		print_results(control);
+	else
+		perror("Connection error");
 
 }
+
 void select_iface(char* iface){
+	int control = connect_or_run();
+	if(control == -1) return;
 
-		char* cmd = (char*)malloc(strlen(iface) + 2);
-		cmd[0] = 'i';
-		strcat(cmd,iface);
-		int sock;
-		if(make_ipc_socket(&sock,0) == -1){
-			perror("Failed to connect to daemon: ");
-		}
-		if(send(sock,cmd,strlen(cmd)+1,0) == -1){
-			perror("Failed to send data: ");
-		}
+	command_t cmd;
+	cmd.cmd = SELECT_IFACE;
+	strcpy(cmd.chararg,iface);
 
-		shutdown(sock,2);
+	send(control,&cmd,sizeof cmd,0);
+
 }
 

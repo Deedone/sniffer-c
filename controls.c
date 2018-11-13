@@ -6,6 +6,7 @@
 
 int make_ipc_socket(int* sockfd, int server){
 	struct sockaddr_un addr;
+	memset(&addr,0,sizeof addr);
 	addr.sun_family = AF_UNIX;
 	strcpy(addr.sun_path,CONTROL_SOCKET);
 	if(server){

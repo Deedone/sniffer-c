@@ -3,34 +3,57 @@ static FILE* db_file = 0;
 static char db_name[255];
 static unsigned long db_size = 0;
 static db_entry* db = 0;
-
+static char db_filename[50]= "";
 
 
 int open_db(char* name){
 	strcpy(db_name,name);
-	strcat(db_name,".db");
+
+
+	strncpy(db_filename,db_name,50);
+	strncat(db_filename,".db",50);
+
 	if(db_file  != 0){
 		fclose(db_file );
 	}
 	if(db != 0){
 		free(db);
+		db = 0;
 		db_size = 0;
 	}
 
-	db_file  = fopen(db_name, "rb");
+	db_file  = fopen(db_filename, "rb");
 	if(db_file ==NULL) {
+		printf("file %s\n",db_filename);
 		perror("Error:");
 		return 0;
 	}
 	fread(&db_size, sizeof db_size,1,db_file);
 	db = (db_entry*)malloc(sizeof(db_entry)*db_size);
 	fread(db,sizeof(db_entry),db_size,db_file);
-	
 
 	fclose(db_file );
 	db_file = 0;
 
 	return 1;
+}
+int get_db_size(){
+	return db_size;
+}
+
+db_entry* get_db(){
+	return db;
+}
+
+char* get_db_name(){
+	return db_name;
+}
+
+void close_db(){
+	dump_db();
+	free(db);
+	db = 0;
+	db_size = 0;
 }
 
 db_entry* get_by_ip(unsigned long addr){
@@ -56,7 +79,12 @@ db_entry* get_by_ip(unsigned long addr){
 	
 db_entry* insert_db(unsigned long addr){
 	db_size++;
-	db = (db_entry*)realloc(db,sizeof(db_entry)*db_size);
+	db_entry* newdb = (db_entry*)realloc(db,sizeof(db_entry)*db_size);
+	if(newdb == NULL){
+		perror("Memory error");
+		return 0;
+	}
+	db = newdb;
 	unsigned long i = db_size - 1;
 	while(i != 0){
 		if(addr > db[i-1].addr){
@@ -79,15 +107,18 @@ void add_db(unsigned long addr){
 
 		entry = get_by_ip(addr);
 	}
-	if(entry == 0){
+	if(entry == NULL){
 		entry = insert_db(addr);
 	}
-	entry->count++;
+	if(entry != NULL){
+		entry->count++;
+	}
 
 }
 
 void dump_db(){
-	db_file = fopen(db_name,"wb");
+	if(db_size == 0 || db == 0) return;
+	db_file = fopen(db_filename,"wb");
 	fwrite(&db_size, sizeof db_size,1,db_file);
 	fwrite(db,sizeof(db_entry),db_size,db_file);
 
@@ -96,7 +127,7 @@ void dump_db(){
 }
 
 void print_db(){
-
+	if(db_size == 0 || db == 0) return;
 	for(unsigned long i= 0;i<db_size;i++){
 		struct in_addr addr;
 		addr.s_addr = db[i].addr;

@@ -15,6 +15,7 @@
 #include <net/ethernet.h>
 #include <netpacket/packet.h>
 #include <net/ethernet.h>
+#include <dirent.h>
 
 #include "db.h"
 #include "controls.h"
@@ -22,22 +23,31 @@
 
 void process_packet(unsigned char* , int);
 int make_socket(int* sockfd, char* iface);
-int process_command(unsigned char*, int socket);
+int process_command(char*, int* socket, int* control,int* sniff);
 void daemonize();
+void send_count(int addr, int control);
+void send_all_stats(int control);
+void send_stat(char* iface, int control);
+void change_iface(char* iface, int* socket);
 
-
+char cur_iface[30] = "eth0";
 
 int main()
 {
 
-	//daemonize();
+	daemonize();
 	unsigned char *buffer = (unsigned char *)malloc(65536); //Its Big!
+	if(buffer == NULL){
+		perror("Failed to allocate frame buffer");
+	}
+
 	int socket, control;
 	time_t lastsave = 0;//Time of last DB dump
 	fd_set readfds; //This is for select()
-	open_db("wlp2s0");
+	open_db("eth0");
+	int sniff = 1;
 
-	if(make_socket(&socket, "wlp2s0") == -1){
+	if(make_socket(&socket, "eth0") == -1){
 			perror("Socket error");
 			return 1;
 	}
@@ -50,9 +60,10 @@ int main()
 	while(1)
 	{
 		FD_ZERO(&readfds);
-		FD_SET(socket,&readfds);
+		if(sniff)
+			FD_SET(socket,&readfds);
 		FD_SET(control,&readfds);
-		int result = select(control+1,&readfds,NULL,NULL,NULL);//Wait for data to appear in sockets
+		int result = select(((control>socket)?control:socket)+1,&readfds,NULL,NULL,NULL);//Wait for data to appear in sockets
 		if(result == -1){
 			perror("Error");
 			break;
@@ -63,16 +74,14 @@ int main()
 			struct sockaddr_ll addr;
 			socklen_t addr_len = sizeof(addr);
 			int data_size = recvfrom(socket , buffer , 65536 , 0, (struct sockaddr*)&addr, &addr_len);
-			
 
 			if(data_size <0 ){
-				perror("Error");
-				//printf("Recvfrom error , failed to get packets\n");
-				return 1;
+				perror("Error recvesting data");
+				continue;
 			}
 			//Now process the packet
 			if(addr.sll_pkttype != PACKET_OUTGOING){
-				process_packet(buffer , data_size);
+				process_packet(buffer , data_size );
 			}
 			if(time(0) - lastsave > 2){
 				dump_db();
@@ -83,17 +92,13 @@ int main()
 		if(FD_ISSET(control,&readfds)){
 			//printf("Got control data\n");
 			int control2 = accept(control,NULL,NULL);
-			if(recv(control2,buffer,65536,0)){
-
-				//printf("Got command %s",buffer);
-
-			}else{
-				perror("Control socket error: ");
-				shutdown(control2,0);
-				break;
+			if(control2 == -1) perror("Control connection error");
+			int len;
+			if((len = read(control2,buffer,65536)) >= 0){
+				printf("Command is %d %s\n",len,buffer);
+				process_command(buffer, &socket, &control2, &sniff);
 			}
-			int should_stop = process_command(buffer, socket);
-			if(should_stop) break;
+			close(control2);
 		}
 	}
 	shutdown(socket,0); //Close socket
@@ -115,15 +120,165 @@ void process_packet(unsigned char* buffer, int size)
 	add_db(iph->saddr);
 
 }
-int process_command(unsigned char* cmd, int socket){
-	if(strcmp("stopcmd",cmd) == 0) return 1;
-	if(cmd[0] == 'i'){
-		setsockopt(socket , SOL_SOCKET , SO_BINDTODEVICE , cmd+1, strlen(cmd) );//passing cmd without first char
-		open_db(cmd+1);
+int process_command( char* cmd, int* socket, int* control, int* sniff){
+	command_t* com = (command_t*)cmd;
+	switch(com->cmd){
+		case STOP:
+			*sniff = 0;
+			close(*socket);
+			close_db();
+			break;
+		case START:
+			make_socket(socket, "eth0");
+			open_db("eth0");
+			*sniff = 1;
+			break;
+		case SHOW_COUNT:
+			send_count(com->intarg, *control);
+			break;
+		case SELECT_IFACE:
+			change_iface(com->chararg,socket);
+			break;
+		case ALL_STATS:
+			send_all_stats(*control);
+			break;
+		case STATS:
+			send_stat(com->chararg,*control);
+			break;
 	}
 
 	return 0;
 }
+
+void change_iface(char* iface, int* socket){
+			close(*socket);
+			if(make_socket(socket,iface) == -1){
+				perror("Iface changing error");
+				close(*socket);
+				make_socket(socket,cur_iface);
+				return;
+			}
+			strcpy(cur_iface,iface);
+			open_db(iface);
+}
+
+void send_count(int addr, int control){
+	int db_isopen = get_db_size();
+	char db_lastopen[20];
+	if(db_isopen != 0){
+		strcpy(db_lastopen,get_db_name());
+		close_db();
+	}
+
+	unsigned long  total = 0;
+	DIR* d;
+	char sendbuf[255];
+	struct dirent *ent;
+	d = opendir(".");
+	if (d){
+		//Looping through all files in cwd
+		while ((ent = readdir(d)) != NULL)
+		{
+			if(strstr(ent->d_name,".db") != NULL){
+				//Removing .db from filenames
+				char* iface = (char*)malloc(strlen(ent->d_name)-2);
+				memcpy(iface,ent->d_name,strlen(ent->d_name)-3);
+				iface[strlen(ent->d_name)-2] = '\0';
+				open_db(iface);
+
+				db_entry* data = get_by_ip(addr);
+				printf("Ip: %u\n",addr);
+				if(data == 0){
+					snprintf(sendbuf,255,"%s - No data\n",iface);
+					send(control,sendbuf,255,0);
+				}
+				else{
+					snprintf(sendbuf,255,"%s - %lu\n",iface, data->count);
+					send(control,sendbuf,255,0);
+					total+=data->count;
+				}
+				free(iface);
+			}
+		}
+	snprintf(sendbuf,255,"Total - %lu\n",total);
+	send(control,sendbuf,255,0);
+	closedir(d);
+	}
+	snprintf(sendbuf,255,"SENDEND");
+	send(control,sendbuf,255,0);
+	if(db_isopen != 0){
+		open_db(db_lastopen);
+	}
+}
+
+void send_all_stats(int control){
+	int db_isopen = get_db_size();
+	char db_lastopen[20];
+	if(db_isopen != 0){
+		strcpy(db_lastopen,get_db_name());
+		close_db();
+	}
+	char sendbuf[255];
+	DIR* d;
+	struct dirent *ent;
+	d = opendir(".");
+	if (d){
+		//Looping through all files in cwd
+		while ((ent = readdir(d)) != NULL)
+		{
+			if(strstr(ent->d_name,".db") != NULL){
+				//Removing .db from filenames
+				ent->d_name[strlen(ent->d_name)-3] = 0;
+
+				snprintf(sendbuf,255,"%s: \n",ent->d_name);
+				send(control,sendbuf,255,0);
+				open_db(ent->d_name);
+				db_entry* db = get_db();
+				int len = get_db_size();
+
+				for(int i = 0;i<len;i++){
+					struct in_addr addr;
+					addr.s_addr = db[i].addr;
+					snprintf(sendbuf,255,"%s - %lu\n",inet_ntoa(addr),db[i].count);
+					send(control,sendbuf,255,0);
+				}
+
+			}
+		}
+	}
+	snprintf(sendbuf,255,"SENDEND");
+	send(control,sendbuf,255,0);
+	if(db_isopen != 0){
+		open_db(db_lastopen);
+	}
+}
+
+void send_stat(char* iface, int control){
+	int db_isopen = get_db_size();
+	char db_lastopen[20];
+	if(db_isopen != 0){
+		strcpy(db_lastopen,get_db_name());
+		close_db();
+	}
+
+	char sendbuf[255];
+	open_db(iface);
+	db_entry* db = get_db();
+	int len = get_db_size();
+
+	for(int i = 0;i<len;i++){
+		struct in_addr addr;
+		addr.s_addr = db[i].addr;
+		snprintf(sendbuf,255,"%s - %lu\n",inet_ntoa(addr),db[i].count);
+		send(control,sendbuf,255,0);
+	}
+	snprintf(sendbuf,255,"SENDEND");
+	send(control,sendbuf,255,0);
+	if(db_isopen != 0){
+		open_db(db_lastopen);
+	}
+}
+
 
 int make_socket(int* sockfd, char* iface){
 	*sockfd = socket(AF_PACKET , SOCK_RAW , htons(ETH_P_ALL));
@@ -146,7 +301,6 @@ int make_socket(int* sockfd, char* iface){
 	if(bind(*sockfd,(struct sockaddr*)&cfg,sizeof cfg) == -1){
 		return -1;
 	}
-
 
 	return 1;
 }
